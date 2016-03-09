@@ -36,6 +36,7 @@ typedef struct {
   /* TODO : u32's big enough? */
   u32 update_count;            /**< Number of ms channel has been running */
   u32 mode_change_count;       /**< update_count at last mode change. */
+  u32 stage_change_count;
   u32 cn0_above_drop_thres_count;
                                /**< update_count value when SNR was
                                   last above a certain margin. */
@@ -48,21 +49,20 @@ typedef struct {
   u32 code_phase_early;        /**< Early code phase. */
   aided_tl_state_t tl_state;   /**< Tracking loop filter state. */
   double code_phase_rate;      /**< Code phase rate in chips/s. */
+  double code_phase_rate_prev; /**< Code phase rate in chips/s. */
   u32 code_phase_rate_fp;      /**< Code phase rate in NAP register units. */
   u32 code_phase_rate_fp_prev; /**< Previous code phase rate in NAP register units. */
   s64 carrier_phase;           /**< Carrier phase in NAP register units. */
   s32 carrier_freq_fp;         /**< Carrier frequency in NAP register units. */
   s32 carrier_freq_fp_prev;    /**< Previous carrier frequency in NAP register units. */
   double carrier_freq;         /**< Carrier frequency Hz. */
+  double carrier_freq_prev;         /**< Carrier frequency Hz. */
   u32 corr_sample_count;       /**< Number of samples in correlation period. */
   corr_t cs[3];                /**< EPL correlation results in correlation period. */
   nav_msg_t nav_msg;           /**< Navigation message of channel SV. */
   u16 lock_counter;            /**< Lock counter. Increments when tracking new signal. */
   cn0_est_state_t cn0_est;     /**< C/N0 Estimator. */
   float cn0;                   /**< Current estimate of C/N0. */
-  u8 int_ms;                   /**< Integration length. */
-  u8 next_int_ms;              /**< Integration length for the next cycle. */
-  bool short_cycle;            /**< Set to true when a short 1ms integration is requested. */
   bool output_iq;              /**< Set if this channel should output I/Q samples on SBP. */
   u8 stage;                    /**< 0 = First-stage. 1 ms integration.
                                     1 = Second-stage. After nav bit sync,
@@ -71,6 +71,8 @@ typedef struct {
   s8 elevation;                /**< Elevation angle, degrees */
   alias_detect_t alias_detect; /**< Alias lock detector. */
   lock_detect_t lock_detect;   /**< Phase-lock detector state. */
+  const struct loop_params *loop_params;      /**< Currently active loop filter parameters. */
+  const struct loop_params *next_loop_params; /**< Next loop filter parameters */
 } tracking_channel_t;
 
 /** \} */

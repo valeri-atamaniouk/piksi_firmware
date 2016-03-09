@@ -30,15 +30,44 @@
  carrier:                    nbw  zeta k fll_aid */
 #define LOOP_PARAMS_SLOW \
   "(1 ms, (1, 0.7, 1, 1540), (10, 0.7, 1, 5))," \
- "(20 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0))"
+ "(20 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0))," \
+ "(20 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0))," \
+ "(20 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0)),"
+
+#define LOOP_PARAMS_5MS \
+  "(1 ms, (1, 0.7, 1, 1540), (10, 0.7, 1, 5))," \
+  "(5 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0))," \
+  "(5 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0))," \
+  "(5 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0)),"
+
+#define LOOP_PARAMS_10MS \
+  "(1 ms, (1, 0.7, 1, 1540), (10, 0.7, 1, 5))," \
+  "(10 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0))," \
+  "(10 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0))," \
+  "(10 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0)),"
+
+#define LOOP_PARAMS_20MS \
+  "(1 ms, (1, 0.7, 1, 1540), (10, 0.7, 1, 5))," \
+ "(20 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0))," \
+ "(20 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0))," \
+ "(20 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0)),"
+
+#define LOOP_PARAMS_1MS \
+  "(1 ms, (1, 0.7, 1, 1540), (10, 0.7, 1, 5))," \
+  "(1 ms, (1, 0.7, 1, 1540), (10, 0.7, 1, 0))," \
+  "(1 ms, (1, 0.7, 1, 1540), (10, 0.7, 1, 0))," \
+  "(1 ms, (1, 0.7, 1, 1540), (10, 0.7, 1, 0)),"
+
 
 #define LOOP_PARAMS_MED \
   "(1 ms, (1, 0.7, 1, 1540), (10, 0.7, 1, 5))," \
-  "(5 ms, (1, 0.7, 1, 1540), (50, 0.7, 1, 0))"
+  "(5 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0))," \
+  "(10 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0))," \
+  "(20 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0)),"
 
 #define LOOP_PARAMS_FAST \
   "(1 ms, (1, 0.7, 1, 1540), (40, 0.7, 1, 5))," \
-  "(4 ms, (1, 0.7, 1, 1540), (62, 0.7, 1, 0))"
+  "(4 ms, (1, 0.7, 1, 1540), (62, 0.7, 1, 0)),"
 
 #define LOOP_PARAMS_EXTRAFAST \
   "(1 ms, (1, 0.7, 1, 1540), (50, 0.7, 1, 5))," \
@@ -52,7 +81,7 @@
 #define LD_PARAMS_EXTRAOPT "0.02, 0.8, 150, 50"
 #define LD_PARAMS_DISABLE  "0.02, 1e-6, 1, 1"
 
-char loop_params_string[120] = LOOP_PARAMS_MED;
+char loop_params_string[] = LOOP_PARAMS_5MS; // LOOP_PARAMS_MED;
 char lock_detect_params_string[24] = LD_PARAMS_DISABLE;
 bool use_alias_detection = true;
 
@@ -62,7 +91,7 @@ static struct loop_params {
   float code_bw, code_zeta, code_k, carr_to_code;
   float carr_bw, carr_zeta, carr_k, carr_fll_aid_gain;
   u8 coherent_ms;
-} loop_params_stage[2];
+} loop_params_stage[4];
 
 static struct lock_detect_params {
   float k1, k2;
@@ -173,6 +202,7 @@ void tracking_channel_init(u8 channel, gnss_signal_t sid, float carrier_freq,
   float code_phase_rate = (1 + carrier_freq/GPS_L1_HZ) * GPS_CA_CHIPPING_RATE;
 
   const struct loop_params *l = &loop_params_stage[0];
+  chan->loop_params = chan->next_loop_params = l;
   aided_tl_init(&(chan->tl_state), 1e3 / l->coherent_ms,
                 code_phase_rate - GPS_CA_CHIPPING_RATE,
                 l->code_bw, l->code_zeta, l->code_k,
@@ -183,7 +213,6 @@ void tracking_channel_init(u8 channel, gnss_signal_t sid, float carrier_freq,
   /* Note: The only coherent integration interval currently supported
      for first-stage tracking (i.e. loop_params_stage[0].coherent_ms)
      is 1. */
-  chan->int_ms = l->coherent_ms;
 
   chan->code_phase_rate_fp = code_phase_rate*NAP_TRACK_CODE_PHASE_RATE_UNITS_PER_HZ;
   chan->code_phase_rate_fp_prev = chan->code_phase_rate_fp;
@@ -194,8 +223,6 @@ void tracking_channel_init(u8 channel, gnss_signal_t sid, float carrier_freq,
   chan->sample_count = start_sample_count;
 
   nav_msg_init(&chan->nav_msg);
-
-  chan->short_cycle = true;
 
   /* Initialise C/N0 estimator */
   cn0_est_init(&chan->cn0_est, 1e3/l->coherent_ms, cn0_init, CN0_EST_LPF_CUTOFF, 1e3/l->coherent_ms);
@@ -242,20 +269,8 @@ void tracking_channel_get_corrs(u8 channel)
   {
     case TRACKING_RUNNING:
       /* Read early ([0]), prompt ([1]) and late ([2]) correlations. */
-      if ((chan->int_ms > 1) && !chan->short_cycle) {
-        /* If we just requested the short cycle, this is the long cycle's
-         * correlations. */
-        corr_t cs[3];
-        nap_track_corr_rd_blocking(channel, &chan->corr_sample_count, cs);
-        /* accumulate short cycle correlations with long */
-        for(int i = 0; i < 3; i++) {
-          chan->cs[i].I += cs[i].I;
-          chan->cs[i].Q += cs[i].Q;
-        }
-      } else {
-        nap_track_corr_rd_blocking(channel, &chan->corr_sample_count, chan->cs);
-        alias_detect_first(&chan->alias_detect, chan->cs[1].I, chan->cs[1].Q);
-      }
+      nap_track_corr_rd_blocking(channel, &chan->corr_sample_count, chan->cs);
+      alias_detect_first(&chan->alias_detect, chan->cs[1].I, chan->cs[1].Q);
       break;
 
     case TRACKING_DISABLED:
@@ -307,35 +322,16 @@ void tracking_channel_update(u8 channel)
 
       if (chan->TOW_ms != TOW_INVALID) {
         /* Have a valid time of week - increment it. */
-        chan->TOW_ms += chan->short_cycle ? 1 : (chan->int_ms-1);
+        chan->TOW_ms += chan->loop_params->coherent_ms;
         if (chan->TOW_ms >= 7*24*60*60*1000)
           chan->TOW_ms -= 7*24*60*60*1000;
         /* TODO: maybe keep track of week number in channel state, or
            derive it from system time */
       }
 
-      if (chan->int_ms > 1) {
-        /* If we're doing long integrations, alternate between short and long
-         * cycles.  This is because of FPGA pipelining and latency.  The
-         * loop parameters can only be updated at the end of the second
-         * integration interval and waiting a whole 20ms is too long.
-         */
-        chan->short_cycle = !chan->short_cycle;
+      chan->update_count += chan->loop_params->coherent_ms;
 
-        if (!chan->short_cycle) {
-          nap_track_update_wr_blocking(
-            channel,
-            chan->carrier_freq_fp,
-            chan->code_phase_rate_fp,
-            0, 0
-          );
-          return;
-        }
-      }
-
-      chan->update_count += chan->int_ms;
-
-      s32 TOW_ms = nav_msg_update(&chan->nav_msg, chan->cs[1].I, chan->int_ms);
+      s32 TOW_ms = nav_msg_update(&chan->nav_msg, chan->cs[1].I, chan->loop_params->coherent_ms);
 
       if ((TOW_ms >= 0) && chan->TOW_ms != TOW_ms) {
         if (chan->TOW_ms != TOW_INVALID) {
@@ -350,13 +346,13 @@ void tracking_channel_update(u8 channel)
       corr_t* cs = chan->cs;
 
       /* Update C/N0 estimate */
-      chan->cn0 = cn0_est(&chan->cn0_est, cs[1].I/chan->int_ms, cs[1].Q/chan->int_ms);
+      chan->cn0 = cn0_est(&chan->cn0_est, (float)cs[1].I/chan->loop_params->coherent_ms, (float)cs[1].Q/chan->loop_params->coherent_ms);
       if (chan->cn0 > track_cn0_drop_thres)
         chan->cn0_above_drop_thres_count = chan->update_count;
 
       /* Update PLL lock detector */
       bool last_outp = chan->lock_detect.outp;
-      lock_detect_update(&chan->lock_detect, cs[1].I, cs[1].Q, chan->int_ms);
+      lock_detect_update(&chan->lock_detect, cs[1].I, cs[1].Q, chan->loop_params->coherent_ms);
       if (chan->lock_detect.outo)
         chan->ld_opti_locked_count = chan->update_count;
 
@@ -377,7 +373,7 @@ void tracking_channel_update(u8 channel)
       }
 
       /* Output I/Q correlations using SBP if enabled for this channel */
-      if (chan->output_iq && (chan->int_ms > 1)) {
+      if (chan->output_iq && (chan->loop_params->coherent_ms > 1)) {
         msg_tracking_iq_t msg = {
           .channel = channel,
         };
@@ -390,8 +386,27 @@ void tracking_channel_update(u8 channel)
       }
 
       aided_tl_update(&(chan->tl_state), cs2);
+
+      /* ------------------------------------------------------------------
+       * Carrier and code frequencies
+       * ------------------------------------------------------------------ */
+      /* Z{0} */
+      chan->carrier_freq_prev = chan->carrier_freq;
+      chan->code_phase_rate_prev = chan->code_phase_rate;
+
+      /* Z{-1} */
       chan->carrier_freq = chan->tl_state.carr_freq;
       chan->code_phase_rate = chan->tl_state.code_freq + GPS_CA_CHIPPING_RATE;
+
+      if (chan->update_count != 0) {
+        /* There is an error between target frequency and actual one. Affect
+         * the target frequency according to the computed error */
+        double carr_freq_error = chan->carrier_freq - chan->carrier_freq_prev;
+        chan->carrier_freq += carr_freq_error * 0.8;
+
+        double code_freq_error = chan->code_phase_rate - chan->code_phase_rate_prev;
+        chan->code_phase_rate += code_freq_error * 0.8;
+      }
 
       chan->code_phase_rate_fp_prev = chan->code_phase_rate_fp;
       chan->code_phase_rate_fp = chan->code_phase_rate
@@ -405,10 +420,10 @@ void tracking_channel_update(u8 channel)
       if (use_alias_detection &&
           (chan->lock_detect.outp ||
            (chan->lock_detect.outo && chan->stage > 0))) {
-        s32 I = (cs[1].I - chan->alias_detect.first_I) / (chan->int_ms - 1);
-        s32 Q = (cs[1].Q - chan->alias_detect.first_Q) / (chan->int_ms - 1);
+        s32 I = (cs[1].I - chan->alias_detect.first_I) / (chan->loop_params->coherent_ms);
+        s32 Q = (cs[1].Q - chan->alias_detect.first_Q) / (chan->loop_params->coherent_ms);
         float err = alias_detect_second(&chan->alias_detect, I, Q);
-        if (fabs(err) > (250 / chan->int_ms)) {
+        if (fabs(err) > (250 / chan->loop_params->coherent_ms)) {
           if (chan->lock_detect.outp)
             log_warn("False phase lock detect PRN%d: err=%f", chan->sid.sat+1, err);
 
@@ -421,44 +436,102 @@ void tracking_channel_update(u8 channel)
         }
       }
 
+      /* ------------------------------------------------------------------
+       * Operational mode control: mode selection
+       * ------------------------------------------------------------------ */
+
+      const struct loop_params *l = NULL;
       /* Consider moving from stage 0 (1 ms integration) to stage 1 (longer). */
-      if ((chan->stage == 0) &&
+      s8 next_bit_phase = (chan->nav_msg.bit_phase + chan->next_loop_params->coherent_ms) % 20;
+      // bool bitSync = ((s8)chan->nav_msg.bit_phase == chan->nav_msg.bit_phase_ref);
+      bool nextBitSync = (next_bit_phase == chan->nav_msg.bit_phase_ref);
+
+      switch (chan->stage) {
+        case 0:
           /* Must have (at least optimistic) phase lock */
-          (chan->lock_detect.outo) &&
           /* Must have nav bit sync, and be correctly aligned */
-          (chan->nav_msg.bit_phase == chan->nav_msg.bit_phase_ref)) {
-        log_info("PRN %d synced @ %u ms, %.1f dBHz",
-                 chan->sid.sat+1, (unsigned int)chan->update_count, chan->cn0);
-        chan->stage = 1;
-        struct loop_params *l = &loop_params_stage[1];
-        chan->int_ms = l->coherent_ms;
-        chan->short_cycle = true;
+          if (chan->lock_detect.outo && nextBitSync) {
+            log_info("PRN %d synced @ %u ms, %.1f dBHz",
+                     chan->sid.sat+1, (unsigned int)chan->update_count, chan->cn0);
+            chan->stage = 1;
+            l = &loop_params_stage[1];
+          }
+          break;
+        default:
+          if (nextBitSync && (chan->update_count - chan->stage_change_count + chan->loop_params->coherent_ms) >= 10000) {
+            chan->stage += 1;
+            if (chan->stage == 4) {
+              chan->stage = 1;
+            }
+            l = &loop_params_stage[chan->stage];
+            log_info("PRN %d mode change @ %u ms, %.1f dBHz",
+                     chan->sid.sat+1, (unsigned int)chan->update_count, chan->cn0);
+          }
+          break;
+      }
 
-        cn0_est_init(&chan->cn0_est, 1e3 / l->coherent_ms, chan->cn0,
-                     CN0_EST_LPF_CUTOFF, 1e3 / l->coherent_ms);
+      /* ------------------------------------------------------------------
+       * Operational mode control: mode change in effect
+       * ------------------------------------------------------------------ */
 
-        /* Recalculate filter coefficients */
-        aided_tl_retune(&chan->tl_state, 1e3 / l->coherent_ms,
-                        l->code_bw, l->code_zeta, l->code_k,
-                        l->carr_to_code,
-                        l->carr_bw, l->carr_zeta, l->carr_k,
-                        l->carr_fll_aid_gain);
+      /* Pipelining: the signal processing is almost done. Next integration
+       * period would be updated according to stored value. */
+      if (chan->loop_params != chan->next_loop_params) {
+        const struct loop_params *o = chan->loop_params;
+        const struct loop_params *l = chan->loop_params = chan->next_loop_params;
 
-        lock_detect_reinit(&chan->lock_detect,
-                           lock_detect_params.k1 * l->coherent_ms,
-                           lock_detect_params.k2,
-                           /* TODO: Should also adjust lp and lo? */
-                           lock_detect_params.lp, lock_detect_params.lo);
+        if (o->coherent_ms != l->coherent_ms) {
+          cn0_est_init(&chan->cn0_est, 1e3 / l->coherent_ms, chan->cn0,
+                       CN0_EST_LPF_CUTOFF, 1e3 / l->coherent_ms);
+          lock_detect_reinit(&chan->lock_detect,
+                             lock_detect_params.k1 * l->coherent_ms,
+                             lock_detect_params.k2,
+                             /* TODO: Should also adjust lp and lo? */
+                             lock_detect_params.lp, lock_detect_params.lo);
+          alias_detect_init(&chan->alias_detect, 500/l->coherent_ms,
+                            l->coherent_ms*0.001f);
+        }
+
+        if (o->coherent_ms != l->coherent_ms ||
+            o->code_bw != l->code_bw ||
+            o->code_zeta != l->code_zeta ||
+            o->code_k != l->code_k ||
+            o->carr_bw != l->carr_bw ||
+            o->carr_zeta != l->carr_zeta ||
+            o->carr_k != l->carr_k ||
+            o->carr_fll_aid_gain != l->carr_fll_aid_gain) {
+          /* Recalculate filter coefficients */
+          aided_tl_retune(&chan->tl_state, 1e3 / l->coherent_ms,
+                          l->code_bw, l->code_zeta, l->code_k,
+                          l->carr_to_code,
+                          l->carr_bw, l->carr_zeta, l->carr_k,
+                          l->carr_fll_aid_gain);
+        }
+      }
+
+      /* ------------------------------------------------------------------
+       * Operational mode control: mode activation
+       * ------------------------------------------------------------------ */
+
+      if (NULL != l && chan->next_loop_params != l) {
+        log_info("PRN %" PRIu16 ": scheduling integration time %" PRIu8 " ms",
+                 chan->sid.sat+1, l->coherent_ms);
+
+        /* Pipelining: next integration time can't be changed. So the change
+         * takes effect after the next interval. */
+        chan->next_loop_params = l;
 
         /* Indicate that a mode change has occurred. */
         chan->mode_change_count = chan->update_count;
+        /* Indicate that a mode change has occurred. */
+        chan->stage_change_count = chan->update_count;
       }
 
       nap_track_update_wr_blocking(
         channel,
         chan->carrier_freq_fp,
         chan->code_phase_rate_fp,
-        chan->int_ms == 1 ? 0 : chan->int_ms - 2, 0
+        chan->next_loop_params->coherent_ms - 1, 0
       );
 
       break;
@@ -579,10 +652,10 @@ static bool parse_loop_params(struct setting *s, const char *val)
       stages.  If the second is omitted, we'll use the same parameters
       as the first stage.*/
 
-  struct loop_params loop_params_parse[2];
+  struct loop_params loop_params_parse[4];
 
   const char *str = val;
-  for (int stage = 0; stage < 2; stage++) {
+  for (int stage = 0; stage < 4; stage++) {
     struct loop_params *l = &loop_params_parse[stage];
 
     int n_chars_read = 0;

@@ -25,7 +25,9 @@ scripts/RELEASE-VERSION
 /scripts/testing/hub_ctrl
 /scripts/testing/bootload_log*
 
+# Eclipse project file
 .cproject
 .project
+.pydevproject
 .settings/
 

@@ -26,6 +26,7 @@ typedef u32 update_count_t;
 typedef struct {
   update_count_t update_count; /**< Number of ms channel has been running */
   update_count_t mode_change_count;
+  update_count_t report_count;
                                /**< update_count at last mode change. */
   update_count_t cn0_below_use_thres_count;
                                /**< update_count value when SNR was
@@ -43,9 +44,12 @@ typedef struct {
   u32 sample_count;            /**< Total num samples channel has tracked for. */
   u32 code_phase_early;        /**< Early code phase. */
   double code_phase_rate;      /**< Code phase rate in chips/s. */
+  double code_phase_rate_prev;      /**< Code phase rate in chips/s. */
   s64 carrier_phase;           /**< Carrier phase in NAP register units. */
   double carrier_freq;         /**< Carrier frequency Hz. */
+  double carrier_freq_prev;         /**< Carrier frequency Hz. */
   float cn0;                   /**< Current estimate of C/N0. */
+  float cn0_lpf;               /**< IIR LPF for C/N0 */
 } tracker_common_data_t;
 
 typedef void tracker_data_t;
@@ -110,6 +114,7 @@ void tracker_bit_sync_update(tracker_context_t *context, u32 int_ms,
                              s32 corr_prompt_real);
 u8 tracker_bit_length_get(tracker_context_t *context);
 bool tracker_bit_aligned(tracker_context_t *context);
+bool tracker_next_bit_aligned(tracker_context_t *context, u8 int_ms);
 void tracker_ambiguity_unknown(tracker_context_t *context);
 void tracker_correlations_send(tracker_context_t *context, const corr_t *cs);
 

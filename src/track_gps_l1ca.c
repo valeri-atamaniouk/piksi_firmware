@@ -41,7 +41,7 @@
 
 #define LOOP_PARAMS_MED \
   "(1 ms, (1, 0.7, 1, 1540), (10, 0.7, 1, 5), (0, 0.0) )," \
-  "(5 ms, (1, 0.7, 1, 1540), (50, 0.7, 1, 0), (1, 0.0) )"
+  "(5 ms, (1, 0.7, 1, 1540), (50, 0.7, 1, 0), (1, 0.8) )"
 
 #define LOOP_PARAMS_FAST \
   "(1 ms, (1, 0.7, 1, 1540), (40, 0.7, 1, 5), (1, 0.95) )," \
@@ -59,6 +59,7 @@
 #define LD_PARAMS_DISABLE  "0.02, 1e-6, 1, 1"
 
 #define CN0_EST_LPF_CUTOFF 5
+#define CN0_EST_LPF_ALPHA 0.1f
 
 /** No predictions, strict 1ms integration. */
 #define LOOP_MODE_INITIAL      (0u)
@@ -101,10 +102,11 @@ typedef struct {
   alias_detect_t alias_detect; /**< Alias lock detector. */
   lock_detect_t lock_detect;   /**< Phase-lock detector state. */
 
+  bool first;
   double code_phase_rate;      /**< Code phase rate in chips/s. */
   double code_phase_rate_prev; /**< Code phase rate in chips/s. */
   double carrier_freq;         /**< Carrier frequency Hz. */
-  double carrier_freq_prev;         /**< Carrier frequency Hz. */
+  double carrier_freq_prev;    /**< Carrier frequency Hz. */
 
   const struct loop_params *stage_params[3]; /**< Loop filter parameters: measured, current, future */
 } gps_l1ca_tracker_data_t;
@@ -183,6 +185,7 @@ static void tracker_gps_l1ca_init(const tracker_channel_info_t *channel_info,
                 common_data->carrier_freq,
                 l->carr_bw, l->carr_zeta, l->carr_k,
                 l->carr_fll_aid_gain);
+  data->first = true;
 
   data->code_phase_rate = common_data->code_phase_rate;
   data->code_phase_rate_fp = common_data->code_phase_rate*NAP_TRACK_CODE_PHASE_RATE_UNITS_PER_HZ;
@@ -191,7 +194,7 @@ static void tracker_gps_l1ca_init(const tracker_channel_info_t *channel_info,
   data->carrier_freq_fp = (s32)(common_data->carrier_freq * NAP_TRACK_CARRIER_FREQ_UNITS_PER_HZ);
   data->carrier_freq_fp_prev = data->carrier_freq_fp;
 
-  /* Initialise C/N0 estimator */
+  /* Initialize C/N0 estimator */
   cn0_est_init(&data->cn0_est, 1e3/l->coherent_ms, common_data->cn0, CN0_EST_LPF_CUTOFF, 1e3/l->coherent_ms);
   common_data->cn0_lpf = common_data->cn0;
 
@@ -224,15 +227,9 @@ static void tracker_gps_l1ca_update(const tracker_channel_info_t *channel_info,
 
   char buf[SID_STR_LEN_MAX];
   sid_to_string(buf, sizeof(buf), channel_info->sid);
-  u8 coherent_ms;
 
-  switch (data->stage_params[0]->mode) {
-  case LOOP_MODE_INITIAL:
-  case LOOP_MODE_NORMAL:
-  default:
-    coherent_ms = data->stage_params[0]->coherent_ms;
-    break;
-  }
+  /* Number of milliseconds in the integrated period */
+  u8 coherent_ms = data->stage_params[0]->coherent_ms;
 
   /* Read early ([0]), prompt ([1]) and late ([2]) correlations. */
     tracker_correlations_read(channel_info->context, data->cs,
@@ -269,8 +266,8 @@ static void tracker_gps_l1ca_update(const tracker_channel_info_t *channel_info,
                              (float)cs[1].Q / coherent_ms);
 
   /* C/N0 low pass filter for console reporting */
-  float alpha = 0.01f;
-  common_data->cn0_lpf = alpha * common_data->cn0 + (1.f-alpha) * common_data->cn0_lpf;
+  common_data->cn0_lpf = CN0_EST_LPF_ALPHA * common_data->cn0 +
+      (1.f - CN0_EST_LPF_ALPHA) * common_data->cn0_lpf;
 
   if (common_data->cn0 > track_cn0_drop_thres)
     common_data->cn0_above_drop_thres_count = common_data->update_count;
@@ -287,10 +284,12 @@ static void tracker_gps_l1ca_update(const tracker_channel_info_t *channel_info,
   bool last_outp = data->lock_detect.outp;
   lock_detect_update(&data->lock_detect, cs[1].I, cs[1].Q, coherent_ms);
 
-  if (data->lock_detect.outo)
+  if (data->lock_detect.outo) {
     common_data->ld_opti_locked_count = common_data->update_count;
-  if (!data->lock_detect.outp)
+  }
+  if (!data->lock_detect.outp) {
     common_data->ld_pess_unlocked_count = common_data->update_count;
+  }
 
   /* Reset carrier phase ambiguity if there's doubt as to our phase lock */
   if (last_outp && !data->lock_detect.outp) {
@@ -313,8 +312,13 @@ static void tracker_gps_l1ca_update(const tracker_channel_info_t *channel_info,
   if (coherent_ms > 1) {
     tracker_correlations_send(channel_info->context, cs);
   }
-
-  aided_tl_update(&data->tl_state, cs2);
+  if (data->first) {
+    data->first = false;
+    data->tl_state.prev_I = 1.0f; // This works, but is it a really good way to do it?
+    data->tl_state.prev_Q = 0.0f;
+  } else {
+    aided_tl_update(&data->tl_state, cs2);
+  }
 
   /* ------------------------------------------------------------------
    * Carrier and code frequencies
@@ -332,24 +336,13 @@ static void tracker_gps_l1ca_update(const tracker_channel_info_t *channel_info,
      * the target frequency according to the computed error */
     double pipelining_k = data->stage_params[1]->predict_k;
 
-    switch (data->stage_params[1]->mode) {
-    case LOOP_MODE_INITIAL:
-      pipelining_k = 0.;
-      break;
-    case LOOP_MODE_NORMAL:
-      pipelining_k = data->stage_params[1]->predict_k;
-      break;
-    default:
-      pipelining_k = 0.;
-      break;
-    }
     if (0. != pipelining_k) {
       double carr_freq_error = common_data->carrier_freq -
-          common_data->carrier_freq_prev;
+                               common_data->carrier_freq_prev;
       common_data->carrier_freq += carr_freq_error * pipelining_k;
 
       double code_freq_error = common_data->code_phase_rate -
-          common_data->code_phase_rate_prev;
+                               common_data->code_phase_rate_prev;
       common_data->code_phase_rate += code_freq_error * pipelining_k;
     }
   }
@@ -366,14 +359,9 @@ static void tracker_gps_l1ca_update(const tracker_channel_info_t *channel_info,
   if (use_alias_detection &&
       (data->lock_detect.outp ||
        (data->lock_detect.outo && data->stage > 0))) {
-    u8 alias_coherent_ms;
-    switch (data->stage_params[0]->mode) {
-    default:
-      alias_coherent_ms = coherent_ms;
-    }
 
-    s32 I = (cs[1].I - data->alias_detect.first_I) / alias_coherent_ms;
-    s32 Q = (cs[1].Q - data->alias_detect.first_Q) / alias_coherent_ms;
+    s32 I = (cs[1].I - data->alias_detect.first_I) / coherent_ms;
+    s32 Q = (cs[1].Q - data->alias_detect.first_Q) / coherent_ms;
     float err = alias_detect_second(&data->alias_detect, I, Q);
     if (fabs(err) > (250.f / coherent_ms)) {
       if (data->lock_detect.outp) {
@@ -397,11 +385,11 @@ static void tracker_gps_l1ca_update(const tracker_channel_info_t *channel_info,
   /* Consider moving from stage 0 (1 ms integration) to stage 1 (longer). */
   bool nextBitSync = tracker_next_bit_aligned(channel_info->context,
                                            data->stage_params[1]->coherent_ms);
-  const struct loop_params *l  = NULL; /* Next parameters */
 
   /* ------------------------------------------------------------------
    * Stage transitions: consider stage transitions only on bit sync
    * ------------------------------------------------------------------ */
+  const struct loop_params *l  = NULL; /* Next parameters */
   if (nextBitSync) {
     /* This integration interval is the last one within the bit boundary. It
      * can also be the only interval (in case of 20ms integrations). */
@@ -469,6 +457,7 @@ static void tracker_gps_l1ca_update(const tracker_channel_info_t *channel_info,
                       cur->carr_to_code,
                       cur->carr_bw, cur->carr_zeta, cur->carr_k,
                       cur->carr_fll_aid_gain);
+      data->first = true;
     }
   }
 
@@ -476,7 +465,7 @@ static void tracker_gps_l1ca_update(const tracker_channel_info_t *channel_info,
    * Operational mode control: mode activation
    * ------------------------------------------------------------------ */
 
-  if (NULL != l) {
+  if (NULL != l && data->stage_params[1] != l) {
     log_info("%s: scheduling integration time %" PRIu8 " ms",
              buf, l->coherent_ms);
 
@@ -531,6 +520,8 @@ static bool parse_loop_params(struct setting *s, const char *val)
        stage has been parsed, n_chars_read == 0 because of missing
        comma and we'll parse the string again into loop_params_parse[1]. */
     str += n_chars_read;
+
+    log_info("Stage %d ms=%"PRIu8" mode=%"PRIu8" K=%lf", stage, l->coherent_ms, l->mode, l->predict_k);
 
     if ((l->coherent_ms == 0)
         || ((20 % l->coherent_ms) != 0) /* i.e. not 1, 2, 4, 5, 10 or 20 */

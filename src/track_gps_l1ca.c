@@ -26,30 +26,30 @@
 #define NUM_GPS_L1CA_TRACKERS   12
 
 /** Total count of loop parameters per row */
-#define LOOP_PARAMS_COUNT (11)
+#define LOOP_PARAMS_COUNT (10)
 
 /*  code: nbw zeta k carr_to_code
  carrier:                    nbw  zeta k fll_aid
- pipelining:                                   type k */
+ pipelining:                                  k */
 #define LOOP_PARAMS_SLOW \
-  "(1 ms, (1, 0.7, 1, 1540), (10, 0.7, 1, 5), (1, 0.95) )," \
- "(20 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0), (2, 0.95) )"
+  "(1 ms, (1, 0.7, 1, 1540), (10, 0.7, 1, 5), 0.0)," \
+ "(20 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0), 0.95)"
 
 #define LOOP_PARAMS_10MS \
-  "(1 ms, (1, 0.7, 1, 1540), (10, 0.7, 1, 5), (0, 0.95) )," \
- "(10 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0), (1, 0.95) )"
+  "(1 ms, (1, 0.7, 1, 1540), (10, 0.7, 1, 5), 0.0)," \
+ "(10 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0), 0.4)"
 
 #define LOOP_PARAMS_MED \
-  "(1 ms, (1, 0.7, 1, 1540), (10, 0.7, 1, 5), (0, 0.0) )," \
-  "(5 ms, (1, 0.7, 1, 1540), (50, 0.7, 1, 0), (1, 0.8) )"
+  "(1 ms, (1, 0.7, 1, 1540), (10, 0.7, 1, 5), 0.0)," \
+  "(5 ms, (1, 0.7, 1, 1540), (50, 0.7, 1, 0), 0.0)"
 
 #define LOOP_PARAMS_FAST \
-  "(1 ms, (1, 0.7, 1, 1540), (40, 0.7, 1, 5), (1, 0.95) )," \
-  "(4 ms, (1, 0.7, 1, 1540), (62, 0.7, 1, 0), (1, 0.95) )"
+  "(1 ms, (1, 0.7, 1, 1540), (40, 0.7, 1, 5), 0.0)," \
+  "(4 ms, (1, 0.7, 1, 1540), (62, 0.7, 1, 0), 0.95)"
 
 #define LOOP_PARAMS_EXTRAFAST \
-  "(1 ms, (1, 0.7, 1, 1540), (50, 0.7, 1, 5), (1, 0.0) )," \
-  "(2 ms, (1, 0.7, 1, 1540), (100, 0.7, 1, 0), (1, 0.95) )"
+  "(1 ms, (1, 0.7, 1, 1540), (50, 0.7, 1, 5),  0.0)," \
+  "(2 ms, (1, 0.7, 1, 1540), (100, 0.7, 1, 0), 0.95)"
 
 /*                          k1,   k2,  lp,  lo */
 #define LD_PARAMS_PESS     "0.10, 1.4, 200, 50"
@@ -71,7 +71,6 @@ static struct loop_params {
   float carr_bw, carr_zeta, carr_k, carr_fll_aid_gain;
   float predict_k;
   u8 coherent_ms;
-  u8 mode;
 } loop_params_stage[2];
 
 static struct lock_detect_params {
@@ -498,30 +497,29 @@ static bool parse_loop_params(struct setting *s, const char *val)
     struct loop_params *l = &loop_params_parse[stage];
 
     int n_chars_read = 0;
-    u16 tmp, tmp2;
+    u16 tmp;
 
     if (sscanf(str,
-               "( %" SCNu16 " ms , "       /* Coherent integration time ms */
+               "( %" SCNu16 " ms , "      /* Coherent integration time ms */
                "( %f , %f , %f , %f ) , " /* Code tracker parameters */
                "( %f , %f , %f , %f ) , " /* Carrier tracker parameters */
-               "( %" SCNu16 " , %f ) ) , " /* Pipelining parameters */
+               " %f ) , "                 /* Pipelining parameters */
                "%n",                      /* Total number of characters */
                &tmp,
                &l->code_bw, &l->code_zeta, &l->code_k, &l->carr_to_code,
                &l->carr_bw, &l->carr_zeta, &l->carr_k, &l->carr_fll_aid_gain,
-               &tmp2, &l->predict_k,
+               &l->predict_k,
                &n_chars_read) < LOOP_PARAMS_COUNT) {
       log_error("Ill-formatted tracking loop param string.");
       return false;
     }
     l->coherent_ms = tmp;
-    l->mode = tmp2;
     /* If string omits second-stage parameters, then after the first
        stage has been parsed, n_chars_read == 0 because of missing
        comma and we'll parse the string again into loop_params_parse[1]. */
     str += n_chars_read;
 
-    log_info("Stage %d ms=%"PRIu8" mode=%"PRIu8" K=%lf", stage, l->coherent_ms, l->mode, l->predict_k);
+    log_info("Stage %d ms=%"PRIu8" K=%f", stage, l->coherent_ms, l->predict_k);
 
     if ((l->coherent_ms == 0)
         || ((20 % l->coherent_ms) != 0) /* i.e. not 1, 2, 4, 5, 10 or 20 */

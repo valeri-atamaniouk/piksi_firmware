@@ -17,10 +17,29 @@
 #include <libswiftnav/track.h>
 
 #include <board.h>
+#include <platform_signal.h>
 
 #include <string.h>
 
-#define TP_MAX_SUPPORTED_SVS 10
+#define TP_USE_1MS_PROFILES
+#define TP_USE_2MS_PROFILES
+// #define TP_USE_5MS_PROFILES
+#define TP_USE_10MS_PROFILES
+#define TP_USE_20MS_PROFILES
+
+#define TP_MAX_SUPPORTED_SVS NUM_GPS_L1CA_TRACKERS
+#define ARR_SIZE(x) (sizeof(x)/sizeof(x[0]))
+
+#define TP_DEFAULT_CN0_USE_THRESHOLD 31.f
+#define TP_DEFAULT_CN0_DROP_THRESHOLD 31.f
+#define TP_DEFAULT_CN0_ITIME_UPGRADE_MARGIN 2.f
+
+#define TP_SNR_THRESHOLD_MIN (TP_DEFAULT_CN0_USE_THRESHOLD + \
+                              TP_DEFAULT_CN0_ITIME_UPGRADE_MARGIN)
+#define TP_SNR_THRESHOLD_MAX  36.f
+#define TP_SNR_THRESHOLD_LOCK 31
+#define TP_SNR_CHANGE_LOCK_MS 1250
+
 
 /**
  * Per-satellite entry.
@@ -33,9 +52,14 @@ typedef struct {
   /** @todo TODO LP filter for speed/acceleration */
   u32           profile_update:1;  /**< Flag if the profile update is required */
   u32           profile_in_queue:1;  /**< Flag if the profile update is required */
-  u32           cur_profile:4;   /**< Index of the currently active profile */
-  u32           next_profile:4;  /**< Index of the next selected profile */
-  // u64         profile_update_time; /**< Timestamp */
+  u32           cur_profile_i:3;   /**< Index of the currently active profile */
+  u32           cur_profile_d:3;   /**< Index of the currently active profile */
+  u32           next_profile_i:3;  /**< Index of the next selected profile */
+  u32           next_profile_d:3;  /**< Index of the next selected profile */
+  u32           low_cn0_count:5;
+  u32           high_cn0_count:5;
+  u16           lock_time_ms:16; /**< Lock time countdown timer */
+  float         prev_val[4];  /**< Filtered counters */
   float         filt_val[4];  /**< Filtered counters */
   float         mean_acc[4];  /**< Mean accumulators */
   u32           mean_cnt;     /**< Mean value divider */
@@ -44,7 +68,7 @@ typedef struct {
   lp1_filter_t  jitter_filter; /**< Value filter */
   lp1_filter_t  cn0_filter;    /**< Value filter */
   u32           time;          /**< Tracking time */
-  u32           last_time;     /**< Last stage switch time */
+  u32           last_print_time; /**< Last debug print time */
 } tp_profile_internal_t;
 
 /**
@@ -56,8 +80,8 @@ static tp_profile_internal_t profiles_gps1[TP_MAX_SUPPORTED_SVS] _CCM;
  * C/N0 profile
  */
 static const tp_cn0_params_t cn0_params_default = {
-  .track_cn0_drop_thres = 31.f,
-  .track_cn0_use_thres = 31.f
+  .track_cn0_drop_thres = TP_DEFAULT_CN0_DROP_THRESHOLD,
+  .track_cn0_use_thres = TP_DEFAULT_CN0_USE_THRESHOLD
 };
 
 /**
@@ -76,16 +100,37 @@ static const tp_lock_detect_params_t ld_params_disable = {
 static const tp_loop_params_t loop_params_initial = {
   // "(1 ms, (1, 0.7, 1, 1540), (40, 0.7, 1, 5)),
   .coherent_ms = 1,
-  .carr_bw = 40,
-  .carr_zeta = .7f,
+  .carr_bw = 50,
+  .carr_zeta = .5f,
   .carr_k = 1,
   .carr_to_code = 1540,
-  .code_bw = 1,
-  .code_zeta = 0.7f,
+  .code_bw = 2,
+  .code_zeta = 0.5f,
   .code_k = 1,
   .carr_fll_aid_gain = 5,
   .mode = TP_TM_PIPELINING
 };
+
+#ifdef TP_USE_1MS_PROFILES
+/**
+ * Initial tracking parameters for GPS L1 C/A
+ */
+static const tp_loop_params_t loop_params_1ms = {
+  // "(1 ms, (1, 0.7, 1, 1540), (40, 0.7, 1, 5)),
+  .coherent_ms = 1,
+  .carr_bw = 7,
+  .carr_zeta = 2.f,
+  .carr_k = 1,
+  .carr_to_code = 1540,
+  .code_bw = 1,
+  .code_zeta = 2.f,
+  .code_k = 1,
+  .carr_fll_aid_gain = 0,
+  .mode = TP_TM_PIPELINING
+};
+#endif /* TP_USE_1MS_PROFILES */
+#ifdef TP_USE_2MS_PROFILES
+
 /**
  * 2 ms tracking parameters for GPS L1 C/A
  */
@@ -93,16 +138,19 @@ static const tp_loop_params_t loop_params_2ms = {
   // "(2 ms, (1, 0.7, 1, 1540), (50, 0.7, 1, 0))"
 
   .coherent_ms = 2,
-  .carr_bw = 50,
-  .carr_zeta = .7f,
+  .carr_bw = 14,
+  .carr_zeta = 1.f,
   .carr_k = 1,
   .carr_to_code = 1540,
   .code_bw = 1,
-  .code_zeta = 0.7f,
+  .code_zeta = 1.f,
   .code_k = 1,
   .carr_fll_aid_gain = 0,
   .mode = TP_TM_PIPELINING
 };
+#endif /* TP_USE_2MS_PROFILES */
+#ifdef TP_USE_5MS_PROFILES
+
 /**
  * 5 ms tracking parameters for GPS L1 C/A
  */
@@ -120,6 +168,8 @@ static const tp_loop_params_t loop_params_5ms = {
   .carr_fll_aid_gain = 0,
   .mode = TP_TM_ONE_PLUS_N
 };
+#endif /* TP_USE_5MS_PROFILES */
+#ifdef TP_USE_10MS_PROFILES
 /**
  * 20 ms tracking parameters for GPS L1 C/A
  */
@@ -127,16 +177,18 @@ static const tp_loop_params_t loop_params_10ms = {
   //  "(10 ms, (1, 0.7, 1, 1540), (30, 0.7, 1, 0))"
 
   .coherent_ms = 10,
-  .carr_bw = 30,
+  .carr_bw = 25,
   .carr_zeta = .7f,
-  .carr_k = 1,
+  .carr_k = 1.,
   .carr_to_code = 1540,
   .code_bw = 1,
-  .code_zeta = 0.7f,
+  .code_zeta = .7f,
   .code_k = 1,
   .carr_fll_aid_gain = 0,
   .mode = TP_TM_ONE_PLUS_N
 };
+#endif /* TP_USE_10MS_PROFILES */
+#ifdef TP_USE_20MS_PROFILES
 /**
  * 20 ms tracking parameters for GPS L1 C/A
  */
@@ -144,23 +196,112 @@ static const tp_loop_params_t loop_params_20ms = {
   //  "(20 ms, (1, 0.7, 1, 1540), (12, 0.7, 1, 0))"
 
   .coherent_ms = 20,
-  .carr_bw = 12,
-  .carr_zeta = .7f,
-  .carr_k = 1,
+  .carr_bw = 5, // 10/.9 is good; 5(1. is better
+  .carr_zeta = .9f,
+  .carr_k = 2.f,
   .carr_to_code = 1540,
   .code_bw = 1,
-  .code_zeta = 0.7f,
+  .code_zeta = .9f,
   .code_k = 1,
   .carr_fll_aid_gain = 0,
   .mode = TP_TM_ONE_PLUS_N
 };
+#endif /* TP_USE_20MS_PROFILES */
+
+enum
+{
+  TP_PROFILE_INI=0,
+#ifdef TP_USE_1MS_PROFILES
+  TP_PROFILE_1MS,
+#endif
+#ifdef TP_USE_2MS_PROFILES
+  TP_PROFILE_2MS,
+#endif
+#ifdef TP_USE_5MS_PROFILES
+  TP_PROFILE_5MS,
+#endif
+#ifdef TP_USE_10MS_PROFILES
+  TP_PROFILE_10MS,
+#endif
+#ifdef TP_USE_20MS_PROFILES
+  TP_PROFILE_20MS,
+#endif
+  TP_PROFILE_TIME_COUNT,
+  TP_PROFILE_TIME_FIRST = 1
+};
+
+enum
+{
+  TP_PROFILE_SLOW = 0,
+  TP_PROFILE_MED,
+  TP_PROFILE_FAST,
+  TP_PROFILE_SPEED_COUNT,
+  TP_PROFILE_SPEED_FIRST = 0
+};
+
+enum
+{
+  TP_LP_IDX_INI,
+#ifdef TP_USE_1MS_PROFILES
+  TP_LP_IDX_1MS,
+#endif
+#ifdef TP_USE_2MS_PROFILES
+  TP_LP_IDX_2MS,
+#endif
+#ifdef TP_USE_5MS_PROFILES
+  TP_LP_IDX_5MS,
+#endif
+#ifdef TP_USE_10MS_PROFILES
+  TP_LP_IDX_10MS,
+#endif
+#ifdef TP_USE_20MS_PROFILES
+  TP_LP_IDX_20MS
+#endif
+};
 
 static const tp_loop_params_t *loop_params[] = {
   &loop_params_initial,
+#ifdef TP_USE_1MS_PROFILES
+  &loop_params_1ms,
+#endif
+#ifdef TP_USE_2MS_PROFILES
   &loop_params_2ms,
+#endif
+#ifdef TP_USE_5MS_PROFILES
   &loop_params_5ms,
+#endif
+#ifdef TP_USE_10MS_PROFILES
   &loop_params_10ms,
-  &loop_params_20ms,
+#endif
+#ifdef TP_USE_20MS_PROFILES
+  &loop_params_20ms
+#endif
+};
+
+/**
+ * State transition matrix.
+ *
+ * Matrix is two-dimensional: first dimension enumerates integration times,
+ * second dimension is the dynamics profile.
+ *
+ */
+static const u8 profile_matrix[][TP_PROFILE_SPEED_COUNT] = {
+  {TP_LP_IDX_INI,  TP_LP_IDX_INI,  TP_LP_IDX_INI},
+#ifdef TP_USE_1MS_PROFILES
+  {TP_LP_IDX_1MS,  TP_LP_IDX_1MS,  TP_LP_IDX_1MS},
+#endif
+#ifdef TP_USE_2MS_PROFILES
+  {TP_LP_IDX_2MS,  TP_LP_IDX_2MS,  TP_LP_IDX_2MS},
+#endif
+#ifdef TP_USE_5MS_PROFILES
+  {TP_LP_IDX_5MS,  TP_LP_IDX_5MS,  TP_LP_IDX_5MS},
+#endif
+#ifdef TP_USE_10MS_PROFILES
+  {TP_LP_IDX_10MS, TP_LP_IDX_10MS, TP_LP_IDX_10MS},
+#endif
+#ifdef TP_USE_20MS_PROFILES
+  {TP_LP_IDX_20MS, TP_LP_IDX_20MS, TP_LP_IDX_20MS}
+#endif
 };
 
 /**
@@ -246,10 +387,14 @@ static void delete_profile(gnss_signal_t sid)
 }
 
 static void get_profile_params(gnss_signal_t sid,
-                               u32           profile,
+                               u8            profile_i,
+                               u8            profile_d,
                                tp_config_t  *config)
 {
-  log_debug_sid(sid, "Activating profile %u", profile);
+  u8 profile = profile_matrix[profile_i][profile_d];
+
+  log_debug_sid(sid, "Activating profile %u [%u][%u])",
+                profile, profile_i, profile_d);
 
   config->lock_detect_params = ld_params_disable;
   config->loop_params = *loop_params[profile];
@@ -269,9 +414,92 @@ static void get_profile_params(gnss_signal_t sid,
       cn0_delta = 10.f * log10f(config->loop_params.coherent_ms);
       break;
     }
+    log_info_sid(sid, "CN0 offset %f @ %d", cn0_delta, config->loop_params.coherent_ms);
 
     config->cn0_params.track_cn0_drop_thres -= cn0_delta;
+    if (config->cn0_params.track_cn0_drop_thres < 23.) {
+      config->cn0_params.track_cn0_drop_thres = 23.;
+    }
     config->cn0_params.track_cn0_use_thres -= cn0_delta;
+    if (config->cn0_params.track_cn0_drop_thres < 23.) {
+      config->cn0_params.track_cn0_use_thres = 23.;
+    }
+  }
+}
+
+static void update_stats(gnss_signal_t sid,
+                         tp_profile_internal_t *profile,
+                         const tp_report_t *data)
+{
+  float dt_sec = 0.001f * data->time_ms;
+  float speed, accel, jitter, cn0;
+
+  speed = compute_speed(sid, data);
+  accel = (profile->prev_val[0] - speed) / dt_sec;
+  jitter = (profile->prev_val[1] - accel) / dt_sec;
+  cn0 = data->cn0;
+
+  profile->mean_acc[0] += speed * speed;
+  profile->mean_acc[1] += accel * accel;
+  profile->mean_acc[2] += jitter * jitter;
+  profile->mean_acc[3] += cn0 * cn0;
+  profile->mean_cnt += 1;
+
+  profile->prev_val[0] = speed;
+  profile->prev_val[1] = accel;
+  profile->prev_val[2] = jitter;
+  profile->prev_val[3] = cn0;
+
+  speed = lp1_filter_update(&profile->speed_filter, speed);
+  accel = (profile->filt_val[0] - speed) / dt_sec;
+  jitter = (profile->filt_val[1] - accel) / dt_sec;
+//  accel = lp1_filter_update(&profile->accel_filter, accel);
+//  jitter = lp1_filter_update(&profile->jitter_filter, jitter);
+  cn0 = lp1_filter_update(&profile->cn0_filter, data->cn0);
+
+  profile->filt_val[0] = speed;
+  profile->filt_val[1] = accel;
+  profile->filt_val[2] = jitter;
+  profile->filt_val[3] = cn0;
+
+}
+
+static void print_stats(gnss_signal_t sid, tp_profile_internal_t *profile)
+{
+  if (profile->time - profile->last_print_time >= 20000) {
+    profile->last_print_time = profile->time;
+
+    float div = 1.f;
+    if (profile->mean_cnt > 0)
+      div = 1.f / profile->mean_cnt;
+
+    float s = sqrtf(profile->mean_acc[0] * div);
+    float a = sqrtf(profile->mean_acc[1] * div);
+    float j = sqrtf(profile->mean_acc[2] * div);
+    float c = sqrtf(profile->mean_acc[3] * div);
+
+    u8 lp_idx = profile_matrix[profile->cur_profile_i][profile->cur_profile_d];
+    log_info_sid(sid,
+                 "MV: T=%dms N=%d CN0=%.2f s=%.3f a=%.3f j=%.3f",
+                 (int)loop_params[lp_idx]->coherent_ms,
+                 profile->mean_cnt,
+                 c, s, a, j
+                );
+    log_info_sid(sid,
+                 "LF: T=%dms N=%d CN0=%.2f s=%.3f a=%.3f j=%.3f",
+                 (int)loop_params[lp_idx]->coherent_ms,
+                 profile->mean_cnt,
+                 profile->filt_val[3],
+                 profile->filt_val[0],
+                 profile->filt_val[1],
+                 profile->filt_val[2]
+                );
+
+    profile->mean_acc[0] = profile->prev_val[0] * profile->prev_val[0];
+    profile->mean_acc[1] = profile->prev_val[1] * profile->prev_val[1];
+    profile->mean_acc[2] = profile->prev_val[2] * profile->prev_val[2];
+    profile->mean_acc[3] = profile->prev_val[3] * profile->prev_val[3];
+    profile->mean_cnt = 1;
   }
 }
 
@@ -323,14 +551,16 @@ tp_result_e tp_tracking_start(gnss_signal_t sid,
       profile->filt_val[2] = 0.;
       profile->filt_val[3] = data->cn0;
 
-      profile->mean_acc[0] = profile->filt_val[0] * profile->filt_val[0];
+      profile->mean_acc[0] = 0;
       profile->mean_acc[1] = 0;
       profile->mean_acc[2] = 0;
-      profile->mean_acc[3] = profile->filt_val[3] * profile->filt_val[3];
-      profile->mean_cnt = 1;
+      profile->mean_acc[3] = 0;
+      profile->mean_cnt = 0;
 
-      profile->cur_profile = 0;
-      profile->next_profile = 0;
+      profile->cur_profile_i = TP_PROFILE_INI;
+      profile->cur_profile_d = TP_PROFILE_MED;
+      profile->next_profile_i = TP_PROFILE_INI;
+      profile->next_profile_d = TP_PROFILE_MED;
 
       float loop_freq = 1000.f / loop_params[0]->coherent_ms;
       lp1_filter_init(&profile->speed_filter, profile->filt_val[0], 0.6f, loop_freq);
@@ -338,7 +568,9 @@ tp_result_e tp_tracking_start(gnss_signal_t sid,
       lp1_filter_init(&profile->jitter_filter, profile->filt_val[2], 0.6f, loop_freq);
       lp1_filter_init(&profile->cn0_filter, profile->filt_val[3], 0.6f, loop_freq);
 
-      get_profile_params(sid, 0, config);
+      get_profile_params(sid,
+                         profile->cur_profile_i, profile->cur_profile_d,
+                         config);
       res = TP_RESULT_SUCCESS;
     } else {
       log_error_sid(sid, "Can't allocate tracking profile");
@@ -388,15 +620,16 @@ tp_result_e tp_get_profile(gnss_signal_t sid, tp_config_t *config)
   if (NULL != config && NULL != profile) {
     if (profile->profile_update) {
       profile->profile_update = 0;
-      profile->cur_profile = profile->next_profile;
-      get_profile_params(sid, profile->cur_profile, config);
-
-      float loop_freq = 1000.f / loop_params[profile->cur_profile]->coherent_ms;
+      profile->cur_profile_i = profile->next_profile_i;
+      profile->cur_profile_d = profile->next_profile_d;
+      get_profile_params(sid, profile->cur_profile_i, profile->cur_profile_d, config);
+      u8 lp_idx = profile_matrix[profile->cur_profile_i][profile->cur_profile_d];
+      float loop_freq = 1000.f / loop_params[lp_idx]->coherent_ms;
 
       lp1_filter_init(&profile->speed_filter, profile->filt_val[0], 0.6f, loop_freq);
       lp1_filter_init(&profile->accel_filter, profile->filt_val[1], 0.6f, loop_freq);
       lp1_filter_init(&profile->jitter_filter, profile->filt_val[2], 0.6f, loop_freq);
-      lp1_filter_init(&profile->cn0_filter, profile->filt_val[3], 0.6f, loop_freq);
+      lp1_filter_init(&profile->cn0_filter, profile->filt_val[3], 0.1f, loop_freq);
 
       res = TP_RESULT_SUCCESS;
     } else {
@@ -454,39 +687,31 @@ tp_result_e tp_report_data(gnss_signal_t sid, const tp_report_t *data)
 
     profile->last_report = *data;
     profile->time += data->time_ms;
-    float dt_sec = 0.001f * loop_params[profile->cur_profile]->coherent_ms; //  (float)data->sample_count / SAMPLE_FREQ;
-    float speed, accel, jitter, cn0;
 
-    speed = compute_speed(sid, data);
-    speed = lp1_filter_update(&profile->speed_filter, speed);
-    accel = (profile->filt_val[0] - speed) / dt_sec;
-    accel = lp1_filter_update(&profile->accel_filter, accel);
-    jitter = (profile->filt_val[1] - accel) / dt_sec;
-    jitter = lp1_filter_update(&profile->jitter_filter, jitter);
-    cn0 = lp1_filter_update(&profile->cn0_filter, data->cn0);
-
-    profile->filt_val[0] = speed;
-    profile->filt_val[1] = accel;
-    profile->filt_val[2] = jitter;
-    profile->filt_val[3] = cn0;
-
-    profile->mean_acc[0] += speed * speed;
-    profile->mean_acc[1] += accel * accel;
-    profile->mean_acc[2] += jitter * jitter;
-    profile->mean_acc[3] += cn0 * cn0;
-    profile->mean_cnt += 1;
+    update_stats(sid, profile, data);
+    print_stats(sid, profile);
 
     bool must_change_profile = false;
+    u8  next_profile_i = 0;
+    u8  next_profile_d = 0;
+    const char *reason = "";
 
     if (!profile->profile_update) {
-      if (profile->cur_profile == 0 &&
+      if (profile->cur_profile_i == 0 &&
           profile->last_report.bsync &&
           profile->last_report.olock) {
         /* Transition from 1ms integration into 2 to 20 ms integration */
         must_change_profile = true;
+        next_profile_i = 1;
+        next_profile_d = profile->cur_profile_d;
+        reason = "bit sync";
+        profile->high_cn0_count = 0;
+        profile->low_cn0_count = 0;
+        profile->lock_time_ms = TP_SNR_CHANGE_LOCK_MS;
       }
       if (!must_change_profile &&
-          profile->cur_profile != 0) {
+          profile->cur_profile_i != 0 &&
+          profile->lock_time_ms == 0) {
         /* When running over 1ms integration, there are four transitions
          * possible:
          * - increase integration time
@@ -494,46 +719,64 @@ tp_result_e tp_report_data(gnss_signal_t sid, const tp_report_t *data)
          * - tighten loop parameters
          * - loosen loop parameters
          */
-        if (profile->time - profile->last_time >= 10000) {
-          profile->last_time = profile->time;
-          must_change_profile = true;
+        float cn0 = profile->filt_val[3];
 
-          float div = 1.f;
-          if (profile->mean_cnt > 0)
-            div = 1.f / profile->mean_cnt;
+        if (cn0 >= TP_SNR_THRESHOLD_MAX) {
+          /* SNR is high - look for relaxing profile */
+          if (profile->cur_profile_i > TP_PROFILE_TIME_FIRST) {
+            profile->high_cn0_count++;
+            profile->low_cn0_count = 0;
 
-          float s = sqrtf(profile->mean_acc[0] * div);
-          float a = sqrtf(profile->mean_acc[1] * div);
-          float j = sqrtf(profile->mean_acc[2] * div);
-          float c = sqrtf(profile->mean_acc[3] * div);
-
-          log_info_sid(sid,
-                       "MV: T=%dms N=%d CN0=%.2f s=%.3f a=%.3f j=%.3f",
-                       (int)loop_params[profile->cur_profile]->coherent_ms,
-                       profile->mean_cnt,
-                       c, s, a, j
-                      );
-
-          profile->mean_acc[0] = profile->filt_val[0] * profile->filt_val[0];
-          profile->mean_acc[1] = profile->filt_val[1] * profile->filt_val[1];
-          profile->mean_acc[2] = profile->filt_val[2] * profile->filt_val[2];
-          profile->mean_acc[3] = profile->filt_val[3] * profile->filt_val[3];
-          profile->mean_cnt = 1;
+            if (profile->high_cn0_count == TP_SNR_THRESHOLD_LOCK) {
+              reason="Upper C/N0 threshold";
+              profile->high_cn0_count = 0;
+              profile->lock_time_ms = TP_SNR_CHANGE_LOCK_MS;
+              must_change_profile = true;
+              next_profile_i = profile->cur_profile_i - 1;
+              next_profile_d = profile->cur_profile_d;
+            }
+          }
+        } else if (cn0 < TP_SNR_THRESHOLD_MIN) {
+          /* SNR is low - look for more restricting profile */
+          if (profile->cur_profile_i < TP_PROFILE_TIME_COUNT - 1) {
+            profile->high_cn0_count = 0;
+            profile->low_cn0_count++;
+            if (profile->low_cn0_count == TP_SNR_THRESHOLD_LOCK) {
+              reason="Lower C/N0 threshold";
+              profile->low_cn0_count = 0;
+              profile->lock_time_ms = TP_SNR_CHANGE_LOCK_MS;
+              must_change_profile = true;
+              next_profile_i = profile->cur_profile_i + 1;
+              next_profile_d = profile->cur_profile_d;
+            }
+          }
         }
       }
     }
-    if (must_change_profile) {
-
+    if (!must_change_profile) {
+      /* Profile lock time count down */
+      if (profile->lock_time_ms > data->time_ms) {
+        profile->lock_time_ms -= data->time_ms;
+      } else {
+        profile->lock_time_ms = 0;
+      }
+    } else {
+      /* Profile update scheduling */
       profile->profile_update = true;
-      profile->next_profile = profile->cur_profile + 1;
+      profile->next_profile_i = next_profile_i;
+      profile->next_profile_d = next_profile_d;
 
-      if (profile->next_profile > 4)
-        profile->next_profile = 1;
+      u8 lp1_idx = profile_matrix[profile->cur_profile_i][profile->cur_profile_d];
+      u8 lp2_idx = profile_matrix[profile->next_profile_i][profile->next_profile_d];
 
       log_info_sid(sid,
-                   "Profile change, s=%.3f a=%.3f j=%.3f ms=%d",
-                   speed, accel, jitter,
-                   (int)loop_params[profile->next_profile]->coherent_ms);
+                   "Profile change: %dms [%d][%d]->%dms [%d][%d] r=%s",
+                   (int)loop_params[lp1_idx]->coherent_ms,
+                   profile->cur_profile_i, profile->cur_profile_d,
+                   (int)loop_params[lp2_idx]->coherent_ms,
+                   profile->next_profile_i, profile->next_profile_d,
+                   reason
+                   );
     }
     res = TP_RESULT_SUCCESS;
   }

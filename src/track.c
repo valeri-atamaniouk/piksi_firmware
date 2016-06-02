@@ -193,7 +193,7 @@ void tracking_send_state()
         running =
             (tracker_channel_state_get(tracker_channel) == STATE_ENABLED);
         sid = tracker_channel->info.sid;
-        cn0 = common_data->cn0;
+        cn0 = common_data->cn0 + 15;
       }
       tracker_channel_unlock(tracker_channel);
 
